@@ -470,9 +470,30 @@ class Staff(commands.Cog):
     async def interview(self, interaction: discord.Interaction, member: discord.Member) -> None:
         """Helps HR interview a prospect member and decide to verify or deny."""
 
+        await interaction.response.defer(ephemeral=True, thinking=True)  # Ensure message history doesnt expire interaction deadline
+
+        channelRecruitmentAndHR = interaction.guild.get_channel(RECRUITMENT_AND_HR)
+        if not isinstance(channelRecruitmentAndHR, discord.TextChannel):
+            log.exception("Staff interview: channelRecruitmentAndHR not discord.TextChannel")
+            return
+
+        async for message in channelRecruitmentAndHR.history(limit=1000):
+            if message.embeds and message.embeds[0].title == "❌ Prospect denied" and message.embeds[0].footer.text and message.embeds[0].footer.text.startswith(f"Prospect ID: {member.id}"):
+                isAuthorStaff = [True for role in member.roles if role.id == UNIT_STAFF]
+                if isAuthorStaff:
+                    embed = discord.Embed(title="⚠️ Prospect denied", description=f"Prospect ({member.mention}) has been denied before. Since you're Unit Staff, you may still continue and override the decision!", color=discord.Color.yellow())
+                    embed.set_footer(text=f"Prospect ID: {member.id}")
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                else:
+                    embed = discord.Embed(title="❌ Prospect denied", description=f"Prospect ({member.mention}) has already been denied. Only Unit Staff may interview denied prospects!", color=discord.Color.red())
+                    embed.set_footer(text=f"Prospect ID: {member.id}")
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    return
+
+
         view = StaffView()
         view.add_item(StaffButton(style=discord.ButtonStyle.green, label="Verify", custom_id=f"staff_button_interview_verify_{member.id}"))
-        #view.add_item(StaffButton(style=discord.ButtonStyle.red, label="Deny", custom_id=f"staff_button_interview_deny_{member.id}", disabled=True))
+        view.add_item(StaffButton(style=discord.ButtonStyle.red, label="Deny", custom_id=f"staff_button_interview_deny_{member.id}"))
 
         interviewQuestions = f"""- Be enthusiastic about sigma and the interview, your energy will set the stage for how our unit operates, if it sounds like you dont care or are disinterested it will affect the quality of the unit in the eyes of the interviewee.
 - Be informative to the point and honest, don't sugar-coat things, be straight forward.
@@ -490,8 +511,7 @@ class Staff(commands.Cog):
 
         embed = discord.Embed(title="Interview Structure", description=interviewQuestions, color=discord.Color.gold())
         embed.set_footer(text=f"Prospect member id: {member.id}")
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     # Hampter command
     @commands.command(name="gibcmdline")
@@ -593,10 +613,11 @@ class Staff(commands.Cog):
     @staticmethod
     async def buttonHandling(interaction: discord.Interaction) -> None:
         """ Handling all staff buttons. """
+        customId = interaction.data["custom_id"]
 
         # Verify prospect from interview
-        if interaction.data["custom_id"].startswith("staff_button_interview_verify_"):
-            memberId = int(interaction.data["custom_id"].split("_")[-1])
+        if customId.startswith("staff_button_interview_verify_"):
+            memberId = int(customId.split("_")[-1])
 
             if not isinstance(interaction.guild, discord.Guild):
                 log.exception("Staff buttonHandling: interaction.guild is not discord.Guild")
@@ -637,6 +658,41 @@ class Staff(commands.Cog):
             embed.timestamp = datetime.now()
             await channelAuditLogs.send(embed=embed)
 
+        # Deny prospect from interview
+        if customId.startswith("staff_button_interview_deny_"):
+            memberId = int(customId.split("_")[-1])
+
+            member = interaction.guild.get_member(memberId)
+            if not isinstance(member, discord.Member):
+                log.exception(f"Staff buttonHandling: member not discord.Member, id '{memberId}'")
+                return
+
+            embed = discord.Embed(title="❌ Prospect denied", description=f"{member.mention} denied", color=discord.Color.red())
+            embed.set_footer(text=f"Member id: {member.id}")
+            embed.timestamp = datetime.now()
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+            # Notify Recruitment-Coordinator
+            if not isinstance(interaction.guild, discord.Guild):
+                log.exception("Staff buttonHandling: interaction.guild is not discord.Guild")
+                return
+
+            channelRecruitmentAndHR = interaction.guild.get_channel(RECRUITMENT_AND_HR)
+            if not isinstance(channelRecruitmentAndHR, discord.TextChannel):
+                log.exception("Staff buttonHandling: channelRecruitmentAndHR not discord.TextChannel")
+                return
+
+            roleRecruitmentCoordinator = interaction.guild.get_role(RECRUITMENT_COORDINATOR)
+            if roleRecruitmentCoordinator is None:
+                log.exception("Staff buttonHandling: roleRecruitmentCoordinator is None")
+                return
+
+            embed = discord.Embed(title="❌ Prospect denied", description=f"{member.mention} has been denied in interview.\nInterviewer: {interaction.user.mention}", color=discord.Color.red())
+            embed.set_footer(text=f"Prospect ID: {member.id} | Interviewer ID: {interaction.user.id}")
+            embed.timestamp = datetime.now()
+
+            await channelRecruitmentAndHR.send(roleRecruitmentCoordinator.mention, embed=embed)
+
 
     async def modalHandling(self, modal: discord.ui.Modal, interaction: discord.Interaction) -> None:
         """ Handling all staff modals. """
@@ -644,8 +700,8 @@ class Staff(commands.Cog):
             log.exception("Staff modalHandling: interaction.user not discord.Member")
             return
 
-        if modal.custom_id != "staff_modal_maps":
-            log.exception("Staff modalHandling: modal.custom_id != staff_modal_maps")
+        if interaction.data["custom_id"] != "staff_modal_maps":
+            log.exception("Staff modalHandling: modal custom_id != staff_modal_maps")
             return
 
         log.info(f"{interaction.user.id} [{interaction.user.display_name}] Updating modpack maps listing")
