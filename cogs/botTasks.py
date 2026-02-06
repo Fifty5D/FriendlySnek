@@ -4,7 +4,7 @@ import asyncpraw, pytz  # type: ignore
 
 from typing import Tuple
 from datetime import datetime, timezone, timedelta
-from dateutil.parser import parse as datetimeParse  # type: ignore
+from dateutil.relativedelta import relativedelta  # type: ignore
 from bs4 import BeautifulSoup as BS  # type: ignore
 from .workshopInterest import WORKSHOP_INTEREST_LIST, WorkshopInterest  # type: ignore
 from .spreadsheet import Spreadsheet
@@ -56,23 +56,22 @@ class BotTasks(commands.Cog):
             return
 
         # Log in Audit Logs
-        if not secret.DISCORD_LOGGING.get("user_join", False):
-            return
-        channelAuditLogs = member.guild.get_channel(AUDIT_LOGS)
-        if not isinstance(channelAuditLogs, discord.TextChannel):
-            log.exception("BotTasks on_member_join: channelAuditLogs not discord.TextChannel")
-            return
-        memberJoined = discord.utils.format_dt(member.created_at, style="F") if member.created_at else "Unknown"
-        embed = discord.Embed(description=f"{member.mention} {member.name}\n**Account Created**\n{memberJoined}", color=discord.Color.green(), timestamp=datetime.now(timezone.utc))
-        embed.set_author(name="Member Joined", icon_url=member.display_avatar)
-        embed.set_footer(text=f"Member ID: {member.id}")
-        embed.set_thumbnail(url=member.display_avatar)
-        await channelAuditLogs.send(embed=embed)
+        if secret.DISCORD_LOGGING.get("user_join", False):
+            channelAuditLogs = member.guild.get_channel(AUDIT_LOGS)
+            if not isinstance(channelAuditLogs, discord.TextChannel):
+                log.exception("BotTasks on_member_join: channelAuditLogs not discord.TextChannel")
+            else:
+                memberJoined = discord.utils.format_dt(member.created_at, style="F") if member.created_at else "Unknown"
+                embed = discord.Embed(description=f"{member.mention} {member.name}\n**Account Created**\n{memberJoined}", color=discord.Color.green(), timestamp=datetime.now(timezone.utc))
+                embed.set_author(name="Member Joined", icon_url=member.display_avatar)
+                embed.set_footer(text=f"Member ID: {member.id}")
+                embed.set_thumbnail(url=member.display_avatar)
+                await channelAuditLogs.send(embed=embed)
 
         # Add to spreadsheet
         Spreadsheet.memberJoin(member)
 
-        #if Member account was created less than 30 days ago, alert unit staff and assign only suspicious account role
+        #if Member account was created less than 45 days ago, alert unit staff and assign only suspicious account role
         if (datetime.now(timezone.utc) - member.created_at) < timedelta(days=45):
             channelStaffChat = guild.get_channel(STAFF_CHAT)
             if not isinstance(channelStaffChat, discord.TextChannel):
@@ -96,11 +95,13 @@ class BotTasks(commands.Cog):
             embed.set_thumbnail(url=member.display_avatar)
             await channelStaffChat.send(f"{roleUnitStaff.mention}", embed=embed)
 
+            rolesToRemove = [role for role in member.roles if not role.is_default()]
             try:
-                await member.remove_roles(member.roles, reason="Suspicious Account")
+                if rolesToRemove:
+                    await member.remove_roles(*rolesToRemove, reason="Suspicious Account")
             except Exception:
-                if (str(member.roles[0]) != "@everyone"):
-                    log.warning(f"BotTasks on_member_join: failed to remove {member.roles} roles from suspicious member '{member.id}' ({member.display_name})")
+                if any(not role.is_default() for role in member.roles):
+                    log.warning(f"BotTasks on_member_join: failed to remove roles from suspicious member '{member.id}' ({member.display_name})")
 
             roleSuspiciousAccount = guild.get_role(SUSPICIOUS_ACCOUNT)
             if roleSuspiciousAccount is None:
@@ -110,8 +111,8 @@ class BotTasks(commands.Cog):
             try:
                 await member.add_roles(roleSuspiciousAccount, reason="Suspicious Account")
                 susText = guild.get_channel(SUS_TEXT)
-                if susText is None:
-                    log.exception("Bottasks on_member_join: susText is None")
+                if not isinstance(susText, discord.TextChannel):
+                    log.exception("BotTasks on_member_join: susText is not discord.TextChannel")
                     return
                 await susText.send(f"{member.mention}, your account is marked as suspicious due to being newly created. Please follow the instructions in the pinned message to resolve this.")
                 return
@@ -244,8 +245,8 @@ class BotTasks(commands.Cog):
 
         jcaModUpdateFound = False
 
-        modUpdateDate = ""
         async for modID, website in BotTasks.fetchWebsiteText(genericData["modpackIds"]):
+            modUpdateDate = ""
             # Fetch mod & parse HTML
             soup = BS(website, "html.parser")
 
@@ -362,9 +363,13 @@ class BotTasks(commands.Cog):
 
         account = await reddit.redditor(username)  # Fetch our account
         submissions = account.submissions.new(limit=1)  # Get account submissions sorted by latest
+        subCreated = None
         async for submission in submissions:  # Check the latest submission [break]
             subCreated = datetime.fromtimestamp(submission.created_utc, timezone.utc)  # Latest post timestamp
             break
+
+        if subCreated is None:
+            subCreated = datetime.fromtimestamp(0, timezone.utc)
 
         if datetime.now(timezone.utc) < (subCreated + timedelta(weeks=1.0, minutes=30.0)):  # Dont post if now is less than ~1 week than last post
             return
@@ -919,14 +924,10 @@ class Reminders(commands.GroupCog, name="reminder"):
         datetime: The future date.
         """
         futureDate = now = datetime.now()
-        if datetimeDict["years"] is not None:
-            yearsToAdd = datetimeDict["years"]
-            try:
-                futureDate = datetime(now.year + yearsToAdd, now.month, now.day)
-            except ValueError:
-                futureDate = datetime(now.year + yearsToAdd, now.month + 1, 1)
-
-            futureDate = futureDate.replace(hour=now.hour, minute=now.minute, second=now.second, microsecond=now.microsecond)
+        yearsToAdd = datetimeDict.get("years") or 0
+        monthsToAdd = datetimeDict.get("months") or 0
+        if yearsToAdd or monthsToAdd:
+            futureDate = futureDate + relativedelta(years=yearsToAdd, months=monthsToAdd)
 
         formatTime = lambda t: 0.0 if t is None else t
         futureDate += timedelta(
@@ -1030,8 +1031,9 @@ class Reminders(commands.GroupCog, name="reminder"):
         embed=discord.Embed(description=embedDescription, color=discord.Color.green())
         embed.set_author(name=interaction.user, icon_url=interaction.user.display_avatar)
 
-        messageInteraction = await interaction.response.send_message(embed=embed)
-        reminders[datetime.timestamp(reminderTime)]["messageID"] = messageInteraction.message_id
+        await interaction.response.send_message(embed=embed)
+        messageInteraction = await interaction.original_response()
+        reminders[datetime.timestamp(reminderTime)]["messageID"] = messageInteraction.id
         with open(REMINDERS_FILE, "w", encoding="utf-8") as f:
             json.dump(reminders, f, indent=4)
 

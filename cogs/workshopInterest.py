@@ -190,15 +190,17 @@ class WorkshopInterest(commands.Cog):
 
         # Get the interested member's name. If they aren't found, remove them
         interestedMembers = ""
+        membersCleaned = []
         for memberID in workshopInterest[workshopName]["members"]:
             member = guild.get_member(memberID)
             if member is not None:
+                membersCleaned.append(memberID)
                 interestedMembers += member.display_name + "\n"
             else:
-                workshopInterest[workshopName]["members"].remove(memberID)
                 removedMember = True
 
         if removedMember:
+            workshopInterest[workshopName]["members"] = membersCleaned
             with open(WORKSHOP_INTEREST_FILE, "w", encoding="utf-8") as f:
                 json.dump(workshopInterest, f, indent=4)
 
@@ -239,8 +241,8 @@ class WorkshopInterest(commands.Cog):
             return
 
         channelWSINT = self.bot.get_channel(WORKSHOP_INTEREST)
-        if not isinstance(ctx.guild, discord.Guild):
-            log.exception("WSINT cleanSpecificWorkshopInterestList: ctx.guild not discord.Guild")
+        if not isinstance(channelWSINT, discord.TextChannel):
+            log.exception("WSINT cleanSpecificWorkshopInterestList: channelWSINT not discord.TextChannel")
             return
 
 
